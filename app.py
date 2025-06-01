@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 from mistralai import Mistral
 import numpy as np
-import faiss
+from sklearn.neighbors import NearestNeighbors
 import os
 from dotenv import load_dotenv
 import traceback
@@ -52,15 +52,14 @@ def get_text_embedding(input):
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
-# Create embeddings and FAISS index
+# Create embeddings and NearestNeighbors index
 try:
     text_embeddings = np.array([get_text_embedding(chunk) for chunk in chunks])
-    d = text_embeddings.shape[1]
-    index = faiss.IndexFlatL2(d)
-    index.add(text_embeddings)
-    logger.info("Successfully created embeddings and FAISS index")
+    nbrs = NearestNeighbors(n_neighbors=2, algorithm='ball_tree')
+    nbrs.fit(text_embeddings)
+    logger.info("Successfully created embeddings and NearestNeighbors index")
 except Exception as e:
-    logger.error(f"Error creating embeddings or FAISS index: {str(e)}")
+    logger.error(f"Error creating embeddings or NearestNeighbors index: {str(e)}")
     logger.error(f"Traceback: {traceback.format_exc()}")
     raise
 
@@ -82,9 +81,8 @@ def ask():
         question_embedding = np.array([get_text_embedding(question)])
         
         # Search for similar chunks
-        k = 2
-        D, I = index.search(question_embedding, k)
-        retrieved_chunks = [chunks[i] for i in I[0]]
+        distances, indices = nbrs.kneighbors(question_embedding)
+        retrieved_chunks = [chunks[i] for i in indices[0]]
         
         # Create prompt
         prompt = f"""
