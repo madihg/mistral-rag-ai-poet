@@ -1,7 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 from mistralai import Mistral
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
 import os
 from dotenv import load_dotenv
 import traceback
@@ -52,16 +51,23 @@ def get_text_embedding(input):
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
-# Create embeddings and NearestNeighbors index
+# Create embeddings
 try:
     text_embeddings = np.array([get_text_embedding(chunk) for chunk in chunks])
-    nbrs = NearestNeighbors(n_neighbors=2, algorithm='ball_tree')
-    nbrs.fit(text_embeddings)
-    logger.info("Successfully created embeddings and NearestNeighbors index")
+    logger.info("Successfully created embeddings")
 except Exception as e:
-    logger.error(f"Error creating embeddings or NearestNeighbors index: {str(e)}")
+    logger.error(f"Error creating embeddings: {str(e)}")
     logger.error(f"Traceback: {traceback.format_exc()}")
     raise
+
+def find_nearest_neighbors(query_embedding, embeddings, k=2):
+    # Calculate cosine similarity
+    similarities = np.dot(embeddings, query_embedding) / (
+        np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_embedding)
+    )
+    # Get indices of k nearest neighbors
+    nearest_indices = np.argsort(similarities)[-k:][::-1]
+    return nearest_indices
 
 @app.route('/')
 def home():
@@ -78,11 +84,11 @@ def ask():
         logger.info(f"Received question: {question}")
         
         # Get question embedding
-        question_embedding = np.array([get_text_embedding(question)])
+        question_embedding = np.array(get_text_embedding(question))
         
         # Search for similar chunks
-        distances, indices = nbrs.kneighbors(question_embedding)
-        retrieved_chunks = [chunks[i] for i in indices[0]]
+        nearest_indices = find_nearest_neighbors(question_embedding, text_embeddings)
+        retrieved_chunks = [chunks[i] for i in nearest_indices]
         
         # Create prompt
         prompt = f"""
