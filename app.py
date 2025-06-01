@@ -6,6 +6,11 @@ import os
 from dotenv import load_dotenv
 import traceback
 from flask_cors import CORS
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -16,6 +21,7 @@ CORS(app)  # Enable CORS for all routes
 # Initialize Mistral client
 api_key = os.getenv('MISTRAL_API_KEY')
 if not api_key:
+    logger.error("MISTRAL_API_KEY environment variable is not set")
     raise ValueError("MISTRAL_API_KEY environment variable is not set")
 
 client = Mistral(api_key=api_key)
@@ -24,12 +30,15 @@ client = Mistral(api_key=api_key)
 try:
     with open('essay.txt', 'r') as f:
         text = f.read()
+    logger.info("Successfully loaded essay.txt")
 except FileNotFoundError:
+    logger.error("essay.txt file not found")
     raise FileNotFoundError("essay.txt file not found. Please ensure it exists in the project directory.")
 
 # Create chunks
 chunk_size = 2048
 chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+logger.info(f"Created {len(chunks)} chunks from the text")
 
 def get_text_embedding(input):
     try:
@@ -39,8 +48,8 @@ def get_text_embedding(input):
         )
         return embeddings_batch_response.data[0].embedding
     except Exception as e:
-        print(f"Error creating embedding: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error creating embedding: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 # Create embeddings and FAISS index
@@ -49,9 +58,10 @@ try:
     d = text_embeddings.shape[1]
     index = faiss.IndexFlatL2(d)
     index.add(text_embeddings)
+    logger.info("Successfully created embeddings and FAISS index")
 except Exception as e:
-    print(f"Error creating embeddings or FAISS index: {str(e)}")
-    print(f"Traceback: {traceback.format_exc()}")
+    logger.error(f"Error creating embeddings or FAISS index: {str(e)}")
+    logger.error(f"Traceback: {traceback.format_exc()}")
     raise
 
 @app.route('/')
@@ -66,6 +76,7 @@ def ask():
             return jsonify({'error': 'No question provided'}), 400
             
         question = data['question']
+        logger.info(f"Received question: {question}")
         
         # Get question embedding
         question_embedding = np.array([get_text_embedding(question)])
@@ -98,9 +109,10 @@ def ask():
         })
     except Exception as e:
         error_message = f"Error processing request: {str(e)}"
-        print(error_message)
-        print(f"Traceback: {traceback.format_exc()}")
+        logger.error(error_message)
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': error_message}), 500
 
+# For local development
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
