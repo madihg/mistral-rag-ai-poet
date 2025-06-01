@@ -1,0 +1,4 @@
+mistralai
+requests
+numpy
+faiss-cpu 
