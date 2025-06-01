@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify
-from mistralai import Mistral
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
 import numpy as np
 import os
 from dotenv import load_dotenv
@@ -17,13 +18,16 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Initialize Mistral client
-api_key = os.getenv('MISTRAL_API_KEY')
-if not api_key:
-    logger.error("MISTRAL_API_KEY environment variable is not set")
-    raise ValueError("MISTRAL_API_KEY environment variable is not set")
-
-client = Mistral(api_key=api_key)
+# Initialize Mistral client with error handling
+try:
+    api_key = os.getenv('MISTRAL_API_KEY')
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY environment variable is not set")
+    client = MistralClient(api_key=api_key)
+    logger.info("Mistral client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Mistral client: {str(e)}")
+    client = None
 
 # Load and process the text
 try:
@@ -39,35 +43,40 @@ chunk_size = 2048
 chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 logger.info(f"Created {len(chunks)} chunks from the text")
 
-def get_text_embedding(input):
+def create_text_embeddings(texts):
+    """Create embeddings for a list of texts using Mistral's embedding model."""
     try:
-        embeddings_batch_response = client.embeddings.create(
-            model="mistral-embed",
-            inputs=input
-        )
-        return embeddings_batch_response.data[0].embedding
+        if not client:
+            raise ValueError("Mistral client not initialized")
+        
+        embeddings = []
+        for text in texts:
+            response = client.embeddings(
+                model="mistral-embed",
+                input=text
+            )
+            embeddings.append(response.data[0].embedding)
+        return np.array(embeddings)
     except Exception as e:
-        logger.error(f"Error creating embedding: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error creating embeddings: {str(e)}")
         raise
 
-# Create embeddings
-try:
-    text_embeddings = np.array([get_text_embedding(chunk) for chunk in chunks])
-    logger.info("Successfully created embeddings")
-except Exception as e:
-    logger.error(f"Error creating embeddings: {str(e)}")
-    logger.error(f"Traceback: {traceback.format_exc()}")
-    raise
-
-def find_nearest_neighbors(query_embedding, embeddings, k=2):
-    # Calculate cosine similarity
-    similarities = np.dot(embeddings, query_embedding) / (
-        np.linalg.norm(embeddings, axis=1) * np.linalg.norm(query_embedding)
-    )
-    # Get indices of k nearest neighbors
-    nearest_indices = np.argsort(similarities)[-k:][::-1]
-    return nearest_indices
+def find_nearest_neighbors(query_embedding, embeddings, k=3):
+    """Find k nearest neighbors using cosine similarity."""
+    try:
+        # Normalize the embeddings
+        query_norm = query_embedding / np.linalg.norm(query_embedding)
+        embeddings_norm = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+        
+        # Calculate cosine similarity
+        similarities = np.dot(embeddings_norm, query_norm)
+        
+        # Get indices of top k similar chunks
+        top_k_indices = np.argsort(similarities)[-k:][::-1]
+        return top_k_indices
+    except Exception as e:
+        logger.error(f"Error finding nearest neighbors: {str(e)}")
+        raise
 
 @app.route('/')
 def home():
@@ -76,46 +85,78 @@ def home():
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
-        data = request.json
+        if not client:
+            return jsonify({"error": "Mistral client not initialized"}), 500
+
+        data = request.get_json()
         if not data or 'question' not in data:
-            return jsonify({'error': 'No question provided'}), 400
-            
+            return jsonify({"error": "No question provided"}), 400
+
         question = data['question']
         logger.info(f"Received question: {question}")
-        
-        # Get question embedding
-        question_embedding = np.array(get_text_embedding(question))
-        
-        # Search for similar chunks
-        nearest_indices = find_nearest_neighbors(question_embedding, text_embeddings)
-        retrieved_chunks = [chunks[i] for i in nearest_indices]
-        
-        # Create prompt
-        prompt = f"""
-        Context information is below.
-        ---------------------
-        {retrieved_chunks}
-        ---------------------
-        Given the context information and not prior knowledge, answer the query.
-        Query: {question}
-        Answer:
-        """
-        
-        # Generate response
-        response = client.chat.complete(
-            model="mistral-tiny",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        return jsonify({
-            'answer': response.choices[0].message.content,
-            'context': retrieved_chunks
-        })
+
+        # Read the essay
+        try:
+            with open('essay.txt', 'r') as f:
+                essay = f.read()
+        except Exception as e:
+            logger.error(f"Error reading essay.txt: {str(e)}")
+            return jsonify({"error": "Could not read essay file"}), 500
+
+        # Split essay into chunks
+        chunks = [essay[i:i+1000] for i in range(0, len(essay), 1000)]
+        logger.info(f"Created {len(chunks)} chunks from essay")
+
+        # Create embeddings for chunks
+        try:
+            chunk_embeddings = create_text_embeddings(chunks)
+            logger.info("Created embeddings for chunks")
+        except Exception as e:
+            logger.error(f"Error creating chunk embeddings: {str(e)}")
+            return jsonify({"error": "Failed to create embeddings"}), 500
+
+        # Create embedding for the question
+        try:
+            question_embedding = create_text_embeddings([question])[0]
+            logger.info("Created embedding for question")
+        except Exception as e:
+            logger.error(f"Error creating question embedding: {str(e)}")
+            return jsonify({"error": "Failed to create question embedding"}), 500
+
+        # Find most similar chunks
+        try:
+            similar_indices = find_nearest_neighbors(question_embedding, chunk_embeddings)
+            similar_chunks = [chunks[i] for i in similar_indices]
+            logger.info(f"Found {len(similar_chunks)} similar chunks")
+        except Exception as e:
+            logger.error(f"Error finding similar chunks: {str(e)}")
+            return jsonify({"error": "Failed to find similar chunks"}), 500
+
+        # Create context from similar chunks
+        context = "\n".join(similar_chunks)
+
+        # Create chat messages
+        messages = [
+            ChatMessage(role="system", content="You are a helpful AI assistant. Use the provided context to answer questions accurately. If the context doesn't contain enough information, say so."),
+            ChatMessage(role="user", content=f"Context: {context}\n\nQuestion: {question}")
+        ]
+
+        # Get response from Mistral
+        try:
+            chat_response = client.chat(
+                model="mistral-tiny",
+                messages=messages
+            )
+            logger.info("Received response from Mistral")
+        except Exception as e:
+            logger.error(f"Error getting response from Mistral: {str(e)}")
+            return jsonify({"error": "Failed to get response from Mistral"}), 500
+
+        return jsonify({"answer": chat_response.choices[0].message.content})
+
     except Exception as e:
-        error_message = f"Error processing request: {str(e)}"
-        logger.error(error_message)
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({'error': error_message}), 500
+        logger.error(f"Unexpected error in /ask endpoint: {str(e)}")
+        return jsonify({"error": "An unexpected error occurred"}), 500
 
 # For local development
 if __name__ == '__main__':
