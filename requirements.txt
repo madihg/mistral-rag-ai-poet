@@ -1,8 +1,7 @@
 flask==3.0.2
 mistralai==0.0.12
 numpy==1.26.4
---extra-index-url https://download.pytorch.org/whl/cpu
-faiss-cpu==1.7.4+torch
+scikit-learn==1.4.1.post1
 python-dotenv==1.0.1
 flask-cors==4.0.0
 gunicorn==21.2.0 
